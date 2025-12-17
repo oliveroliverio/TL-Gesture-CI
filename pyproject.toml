@@ -1,0 +1,13 @@
+[project]
+name = "hand-gesture-recognition-mediapipe"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "mediapipe==0.10.9",
+    "tensorflow",
+    "protobuf<5",
+]

@@ -38,6 +38,8 @@ def get_args():
     return args
 
 
+from model import FeatureExtractor # [NEW]
+
 def main():
     # Argument parsing #################################################################
     args = get_args()
@@ -65,9 +67,8 @@ def main():
         min_tracking_confidence=min_tracking_confidence,
     )
     
-    # Use standard drawing utils for face/pose (Mesh is too complex to draw manually)
-    mp_drawing = mp.solutions.drawing_utils 
-    mp_drawing_styles = mp.solutions.drawing_styles
+    # Feature Extractor [NEW]
+    feature_extractor = FeatureExtractor()
 
     keypoint_classifier = KeyPointClassifier()
 
@@ -124,23 +125,36 @@ def main():
         results = holistic.process(image)
         image.flags.writeable = True
 
+        # Extract Holistic Features [NEW]
+        holistic_features = feature_extractor.extract_features(results)
+
         #  ####################################################################
-        # Draw Face Mesh
+        # Draw Segmented Face & Pose (Custom) [NEW]
         if results.face_landmarks:
-             mp_drawing.draw_landmarks(
-                debug_image,
-                results.face_landmarks,
-                mp_holistic.FACEMESH_TESSELATION,
-                landmark_drawing_spec=None,
-                connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style())
+            # Draw Eyebrows and Lips only
+            image_width, image_height = image.shape[1], image.shape[0]
+            
+            # Helper to draw list of indices
+            def draw_indices(indices, color):
+                for index in indices:
+                   point = results.face_landmarks.landmark[index] 
+                   x = int(point.x * image_width)
+                   y = int(point.y * image_height)
+                   cv.circle(debug_image, (x, y), 1, color, -1)
+
+            draw_indices(feature_extractor.LEFT_EYEBROW, (0, 255, 255)) # Yellow
+            draw_indices(feature_extractor.RIGHT_EYEBROW, (0, 255, 255))
+            draw_indices(feature_extractor.LIPS, (0, 0, 255)) # Red
         
-        # Draw Pose
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                debug_image,
-                results.pose_landmarks,
-                mp_holistic.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
+            # Draw Upper Body only
+            image_width, image_height = image.shape[1], image.shape[0]
+            for index in feature_extractor.POSE_UPPER_BODY:
+                point = results.pose_landmarks.landmark[index]
+                if point.visibility > 0.5:
+                    x = int(point.x * image_width)
+                    y = int(point.y * image_height)
+                    cv.circle(debug_image, (x, y), 5, (255, 0, 0), -1) # Blue
 
         # Process Hands (Left)
         if results.left_hand_landmarks:
@@ -154,7 +168,7 @@ def main():
             pre_processed_point_history_list = pre_process_point_history(debug_image, point_history)
             
             # Write to the dataset file
-            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list)
+            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list, holistic_features)
 
             # Hand sign classification
             hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
@@ -196,7 +210,7 @@ def main():
             pre_processed_point_history_list = pre_process_point_history(debug_image, point_history)
             
             # Write to the dataset file
-            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list)
+            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list, holistic_features)
 
             # Hand sign classification
             hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
@@ -347,7 +361,7 @@ def pre_process_point_history(image, point_history):
     return temp_point_history
 
 
-def logging_csv(number, mode, landmark_list, point_history_list):
+def logging_csv(number, mode, landmark_list, point_history_list, holistic_features=None):
     if mode == 0:
         pass
     if mode == 1 and (0 <= number <= 9):
@@ -355,6 +369,20 @@ def logging_csv(number, mode, landmark_list, point_history_list):
         with open(csv_path, 'a', newline="") as f:
             writer = csv.writer(f)
             writer.writerow([number, *landmark_list])
+            
+        # [NEW] Log Holistic Data if available separately
+        if holistic_features:
+            csv_path_holistic = 'model/keypoint_classifier/keypoint_holistic.csv'
+            # Flatten dict values: face + pose
+            face_data = holistic_features.get('face', [])
+            pose_data = holistic_features.get('pose', [])
+            # Combine all
+            full_row = [number, *landmark_list, *face_data, *pose_data]
+            
+            with open(csv_path_holistic, 'a', newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(full_row)
+                
     if mode == 2 and (0 <= number <= 9):
         csv_path = 'model/point_history_classifier/point_history.csv'
         with open(csv_path, 'a', newline="") as f:

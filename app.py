@@ -58,13 +58,16 @@ def main():
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
 
     # Model load #############################################################
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(
+    mp_holistic = mp.solutions.holistic
+    holistic = mp_holistic.Holistic(
         static_image_mode=use_static_image_mode,
-        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
+    
+    # Use standard drawing utils for face/pose (Mesh is too complex to draw manually)
+    mp_drawing = mp.solutions.drawing_utils 
+    mp_drawing_styles = mp.solutions.drawing_styles
 
     keypoint_classifier = KeyPointClassifier()
 
@@ -118,58 +121,124 @@ def main():
         image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
 
         image.flags.writeable = False
-        results = hands.process(image)
+        results = holistic.process(image)
         image.flags.writeable = True
 
         #  ####################################################################
-        if results.multi_hand_landmarks is not None:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
-                                                  results.multi_handedness):
-                # Bounding box calculation
-                brect = calc_bounding_rect(debug_image, hand_landmarks)
-                # Landmark calculation
-                landmark_list = calc_landmark_list(debug_image, hand_landmarks)
+        # Draw Face Mesh
+        if results.face_landmarks:
+             mp_drawing.draw_landmarks(
+                debug_image,
+                results.face_landmarks,
+                mp_holistic.FACEMESH_TESSELATION,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style())
+        
+        # Draw Pose
+        if results.pose_landmarks:
+            mp_drawing.draw_landmarks(
+                debug_image,
+                results.pose_landmarks,
+                mp_holistic.POSE_CONNECTIONS,
+                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
 
-                # Conversion to relative coordinates / normalized coordinates
-                pre_processed_landmark_list = pre_process_landmark(
-                    landmark_list)
-                pre_processed_point_history_list = pre_process_point_history(
-                    debug_image, point_history)
-                # Write to the dataset file
-                logging_csv(number, mode, pre_processed_landmark_list,
-                            pre_processed_point_history_list)
+        # Process Hands (Left)
+        if results.left_hand_landmarks:
+            # Bounding box calculation
+            brect = calc_bounding_rect(debug_image, results.left_hand_landmarks)
+            # Landmark calculation
+            landmark_list = calc_landmark_list(debug_image, results.left_hand_landmarks)
 
-                # Hand sign classification
-                hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
-                if hand_sign_id == 2:  # Point gesture
-                    point_history.append(landmark_list[8])
-                else:
-                    point_history.append([0, 0])
+            # Conversion to relative coordinates / normalized coordinates
+            pre_processed_landmark_list = pre_process_landmark(landmark_list)
+            pre_processed_point_history_list = pre_process_point_history(debug_image, point_history)
+            
+            # Write to the dataset file
+            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list)
 
-                # Finger gesture classification
-                finger_gesture_id = 0
-                point_history_len = len(pre_processed_point_history_list)
-                if point_history_len == (history_length * 2):
-                    finger_gesture_id = point_history_classifier(
-                        pre_processed_point_history_list)
+            # Hand sign classification
+            hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+            
+            # Point history update (using index finger tip)
+            # 8 is Index Finger Tip
+            point_history.append(landmark_list[8])
 
-                # Calculates the gesture IDs in the latest detection
-                finger_gesture_history.append(finger_gesture_id)
-                most_common_fg_id = Counter(
-                    finger_gesture_history).most_common()
+            # Finger gesture classification
+            finger_gesture_id = 0
+            point_history_len = len(pre_processed_point_history_list)
+            if point_history_len == (history_length * 2):
+                finger_gesture_id = point_history_classifier(pre_processed_point_history_list)
 
-                # Drawing part
-                debug_image = draw_bounding_rect(use_brect, debug_image, brect)
-                debug_image = draw_landmarks(debug_image, landmark_list)
-                debug_image = draw_info_text(
-                    debug_image,
-                    brect,
-                    handedness,
-                    keypoint_classifier_labels[hand_sign_id],
-                    point_history_classifier_labels[most_common_fg_id[0][0]],
-                )
-        else:
-            point_history.append([0, 0])
+            # Calculates the gesture IDs in the latest detection
+            finger_gesture_history.append(finger_gesture_id)
+            most_common_fg_id = Counter(finger_gesture_history).most_common()
+
+            # Drawing part
+            debug_image = draw_bounding_rect(use_brect, debug_image, brect)
+            debug_image = draw_landmarks(debug_image, landmark_list)
+            debug_image = draw_info_text(
+                debug_image,
+                brect,
+                "Left",
+                keypoint_classifier_labels[hand_sign_id],
+                point_history_classifier_labels[most_common_fg_id[0][0]],
+            )
+
+        # Process Hands (Right)
+        if results.right_hand_landmarks:
+            # Bounding box calculation
+            brect = calc_bounding_rect(debug_image, results.right_hand_landmarks)
+            # Landmark calculation
+            landmark_list = calc_landmark_list(debug_image, results.right_hand_landmarks)
+
+            # Conversion to relative coordinates / normalized coordinates
+            pre_processed_landmark_list = pre_process_landmark(landmark_list)
+            pre_processed_point_history_list = pre_process_point_history(debug_image, point_history)
+            
+            # Write to the dataset file
+            logging_csv(number, mode, pre_processed_landmark_list, pre_processed_point_history_list)
+
+            # Hand sign classification
+            hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+            
+            # Point history update
+            if not results.left_hand_landmarks: # Avoid double counting if both hands, preference to right or just append? 
+                # Original logic appended 0,0 if no hand. 
+                # Here we strictly append if hand exists.
+                # Simplification: Only tracking point history for one hand at a time for simplicity or "Dominant" hand logic
+                # For now let's just append for right hand as well
+                point_history.append(landmark_list[8])
+            
+            if results.left_hand_landmarks and results.right_hand_landmarks:
+                # If both hands, we might have appended twice... 
+                # Original code logic: "if results.multi_hand_landmarks is not None: ... else: point_history.append([0, 0])"
+                # And inside loop: "if hand_sign_id == 2: point_history.append(...) else: point_history.append([0, 0])"
+                # This suggests point history is single-threaded (track one point).
+                pass
+
+            # Finger gesture classification
+            finger_gesture_id = 0
+            point_history_len = len(pre_processed_point_history_list)
+            if point_history_len == (history_length * 2):
+                finger_gesture_id = point_history_classifier(pre_processed_point_history_list)
+
+            # Calculates the gesture IDs in the latest detection
+            finger_gesture_history.append(finger_gesture_id)
+            most_common_fg_id = Counter(finger_gesture_history).most_common()
+
+            # Drawing part
+            debug_image = draw_bounding_rect(use_brect, debug_image, brect)
+            debug_image = draw_landmarks(debug_image, landmark_list)
+            debug_image = draw_info_text(
+                debug_image,
+                brect,
+                "Right",
+                keypoint_classifier_labels[hand_sign_id],
+                point_history_classifier_labels[most_common_fg_id[0][0]],
+            )
+        
+        if not results.left_hand_landmarks and not results.right_hand_landmarks:
+             point_history.append([0, 0])
 
         debug_image = draw_point_history(debug_image, point_history)
         debug_image = draw_info(debug_image, fps, mode, number)
@@ -496,7 +565,7 @@ def draw_info_text(image, brect, handedness, hand_sign_text,
     cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22),
                  (0, 0, 0), -1)
 
-    info_text = handedness.classification[0].label[0:]
+    info_text = handedness
     if hand_sign_text != "":
         info_text = info_text + ':' + hand_sign_text
     cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
